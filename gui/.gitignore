@@ -1,0 +1,11 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Run output (collected artifacts, logs)
+backend/_runs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
