@@ -101,6 +101,20 @@ def analyze_collection(run_id: str):
                              media_type="text/event-stream")
 
 
+class ExplainRequest(BaseModel):
+    rel: str
+    header: list[str] = []
+    row: list[str] = []
+
+
+@app.post("/api/collections/{run_id}/explain")
+def explain_row(run_id: str, req: ExplainRequest):
+    run = runs.registry.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return analysis.explain_row(run, req.rel, req.header, req.row, SETTINGS)
+
+
 @app.post("/api/preview-command")
 def preview_command(req: StartRequest):
     """Show the exact argv that would run, without launching anything."""

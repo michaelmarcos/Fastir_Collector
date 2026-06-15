@@ -288,6 +288,72 @@ def _heuristic_structured(run) -> dict:
     return {"verdict": verdict, "confidence": "low", "techniques": techniques}
 
 
+# --------------------------------------------------------------------------- #
+# per-row "explain this" lookups
+# --------------------------------------------------------------------------- #
+
+ARTIFACT_DESCRIPTIONS = {
+    "muicache": "MUICache records the friendly names of executables that have been run by the user — evidence of program execution.",
+    "powershell_history": "PSReadLine console history: the literal PowerShell command lines a user typed. A prime source of attacker tooling.",
+    "windows_timeline": "Windows Timeline (ActivitiesCache.db) logs apps and documents the user interacted with, with start/end times.",
+    "jumplists": "Jump-list files: per-application most-recently-used lists maintained by the shell.",
+    "jumplist_entries": "DestList MRU entries decoded from a jump list: recently opened files with access counts and timestamps.",
+    "jumplist_lnk_targets": "Individual LNK shortcuts inside a jump list: the exact target path, arguments, and timestamps of a recently opened item.",
+    "windows_recall": "Windows 11 Recall metadata: the snapshot database and screenshot image store Recall maintains of on-screen activity.",
+    "recall_window_captures": "Windows Recall window captures: window titles and OCR'd on-screen text from periodic screenshots.",
+    "bam_dam": "BAM/DAM (Background/Desktop Activity Moderator) records per-user executable paths with last-execution timestamps.",
+    "shimcache": "AppCompatCache (ShimCache): a record of executables present/run, used to prove execution or presence.",
+    "recentapps": "Search RecentApps: applications the user launched, with launch counts and last-access times.",
+    "defender": "Microsoft Defender exclusions and detection history — exclusions are a common attacker tampering technique.",
+    "ai_applications": "Footprints of local AI/LLM tooling and any API keys discovered (redacted) on the host.",
+    "cryptocurrency": "Cryptocurrency wallet files and browser wallet extensions present on the host.",
+    "amcache": "Amcache.hve acquisition record — a registry hive rich in program-execution evidence (parsed offline).",
+    "srum": "SRUDB.dat acquisition record — the System Resource Usage Monitor database (app/network usage, parsed offline).",
+    "indicators": "Triage indicators: heuristic findings the collector flagged as potentially suspicious, ranked by severity.",
+}
+
+_EXPLAIN_SYSTEM = """You are a DFIR analyst assistant. Explain a single forensic artifact row to a
+responder in 2-4 sentences: what this artifact and its fields mean, what THIS specific row indicates,
+and whether it looks benign or warrants a closer look. Be concrete and tie the explanation to the row's
+values. Hedge appropriately — do not assert malice. Plain prose, no headings."""
+
+
+def _artifact_stem(rel: str) -> str:
+    name = rel.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return name.lstrip("_")
+
+
+def explain_row(run, rel: str, header: list[str], row: list[str], settings: dict | None = None) -> dict:
+    avail = availability(settings)
+    stem = _artifact_stem(rel)
+    desc = ARTIFACT_DESCRIPTIONS.get(stem, "A forensic artifact collected from the host.")
+    pairs = "\n".join(f"- {h}: {v}" for h, v in zip(header, row))
+
+    if avail["ai_ready"]:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=_api_key(settings))
+            user = (f"Artifact: {rel}\nWhat this artifact is: {desc}\n\n"
+                    f"The selected row:\n{pairs}\n\nExplain this row for the responder.")
+            msg = client.messages.create(
+                model=MODEL,
+                max_tokens=500,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "low"},
+                system=_EXPLAIN_SYSTEM,
+                messages=[{"role": "user", "content": user}],
+            )
+            text = "".join(b.text for b in msg.content if b.type == "text").strip()
+            return {"explanation": text, "mode": "claude"}
+        except Exception as exc:
+            return {"explanation": f"{desc}\n\nSelected row:\n{pairs}\n\n(AI explanation unavailable: {exc})",
+                    "mode": "heuristic"}
+
+    return {"explanation": f"{desc}\n\nSelected row:\n{pairs}\n\nSet an Anthropic API key in Settings "
+                           f"for an AI explanation of what this specific entry implies.",
+            "mode": "heuristic"}
+
+
 def iter_analysis_sse(run, settings: dict | None = None):
     """Yield SSE-formatted chunks of the analysis (Claude if available, else heuristic)."""
     avail = availability(settings)

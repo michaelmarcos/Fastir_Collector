@@ -67,4 +67,11 @@ export const api = {
     `/api/collections/${id}/artifacts/download?rel=${encodeURIComponent(rel)}`,
 
   analyzeStreamUrl: (id: string) => `/api/collections/${id}/analyze/stream`,
+
+  explain: (id: string, rel: string, header: string[], row: string[]) =>
+    fetch(`/api/collections/${id}/explain`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rel, header, row }),
+    }).then((r) => j<{ explanation: string; mode: string }>(r)),
 };

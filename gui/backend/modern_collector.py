@@ -74,6 +74,10 @@ SUSPECT_DIRS = ("\\temp\\", "\\tmp\\", "\\appdata\\local\\temp\\", "\\downloads\
 SUSPECT_PS = ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile",
               "iex", "invoke-expression", "invoke-webrequest", "webclient", "-w hidden",
               "-windowstyle hidden", "bypass", "-nop", "-noprofile", "certutil", "bitsadmin")
+# Executable / script extensions — a recent *document* in Downloads is normal, but an
+# executable or script run from there is worth flagging.
+SUSPECT_EXEC_EXT = (".exe", ".dll", ".ps1", ".bat", ".cmd", ".vbs", ".js", ".scr",
+                    ".com", ".hta", ".jar", ".msi", ".wsf", ".pif", ".lnk")
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +131,12 @@ def is_admin() -> bool:
 def suspect_path(path: str) -> bool:
     p = (path or "").lower()
     return any(frag in p for frag in SUSPECT_DIRS)
+
+
+def suspect_exec(path: str) -> bool:
+    """A program/script (not just a document) located in a suspicious directory."""
+    p = (path or "").lower()
+    return p.endswith(SUSPECT_EXEC_EXT) and suspect_path(p)
 
 
 class Result:
@@ -388,9 +398,9 @@ def collect_jumplists(indicators: list[dict]) -> list[Result]:
                         for e in _parse_destlist(destlist):
                             entries.add(appid, known, e["entry"], e["access_count"],
                                         e["last_access"], e["path"])
-                            if suspect_path(e["path"]):
+                            if suspect_exec(e["path"]):
                                 indicators.append(_ind("jumplists", "medium",
-                                                       f"Recent file from suspicious path ({known or appid}): {e['path']}",
+                                                       f"Recent executable from suspicious path ({known or appid}): {e['path']}",
                                                        e["last_access"]))
                 except Exception:
                     pass
@@ -404,8 +414,8 @@ def collect_jumplists(indicators: list[dict]) -> list[Result]:
                             lnks.add(appid, known, sname, info["target"], info["arguments"],
                                      info["working_dir"], info["file_size"],
                                      info["write_time"], info["creation_time"])
-                            blob_low = (info["target"] + " " + info["arguments"]).lower()
-                            if suspect_path(info["target"]) or any(s in blob_low for s in SUSPECT_PS):
+                            args_low = (info["arguments"] or "").lower()
+                            if suspect_exec(info["target"]) or any(s in args_low for s in SUSPECT_PS):
                                 indicators.append(_ind("jumplists", "high",
                                                        f"Suspicious jump-list LNK ({known or appid}): "
                                                        f"{info['target']} {info['arguments']}".strip(),

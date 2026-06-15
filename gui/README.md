@@ -100,6 +100,15 @@ strip of technique chips at the top. It travels in an HTML comment so it stays i
 in the prose; the backend parses it and the heuristic fallback produces the same shape
 deterministically.
 
+**ATT&CK matrix view.** The panel has a **Report / ATT&CK matrix** toggle; the matrix
+plots the detected techniques as an ATT&CK-Navigator-style layer — one column per tactic
+(kill-chain order), technique cells colored by confidence (high/medium/low).
+
+**Explain this row.** In the artifact browser, **click any CSV row** to ask the AI what
+that specific entry means forensically and whether it's notable. Uses Claude when a key is
+set (`POST /api/collections/{id}/explain`); otherwise falls back to a built-in description
+of the artifact type plus the row's fields.
+
 Set an API key in **⚙ Settings** (or the `ANTHROPIC_API_KEY` env var). With **no key**,
 the panel falls back to a deterministic **heuristic triage** (severity-grouped indicators
 with a rule-based ATT&CK mapping) so the feature still works offline. The prompt instructs
@@ -179,6 +188,7 @@ backend auto-serves `frontend/dist`.
 | GET | `/api/collections/{id}/artifacts/preview?rel=` | Parsed CSV/JSON preview |
 | GET | `/api/collections/{id}/artifacts/download?rel=` | Download an artifact |
 | GET | `/api/collections/{id}/analyze/stream` | SSE stream of the AI attack-chain analysis |
+| POST | `/api/collections/{id}/explain` | Explain one artifact row (AI or heuristic) |
 | GET | `/api/analysis-info` | Whether AI analysis is ready (SDK + key) or heuristic |
 
 Runs and their output are stored under `backend/_runs/<id>/` (git-ignored).
