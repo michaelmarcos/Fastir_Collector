@@ -1,4 +1,4 @@
-import type { ArtifactPreview, CollectorStatus, Meta, RunSummary } from "./types";
+import type { AnalysisInfo, ArtifactPreview, CollectorStatus, Meta, RunSummary } from "./types";
 
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -26,12 +26,16 @@ export interface StartOptions {
 export const api = {
   meta: () => fetch("/api/meta").then((r) => j<Meta>(r)),
 
-  updateSettings: (collector_override: string | null, interpreter_override: string[] | null) =>
+  updateSettings: (
+    collector_override: string | null,
+    interpreter_override: string[] | null,
+    analysis_api_key?: string | null
+  ) =>
     fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ collector_override, interpreter_override }),
-    }).then((r) => j<{ status: CollectorStatus }>(r)),
+      body: JSON.stringify({ collector_override, interpreter_override, analysis_api_key }),
+    }).then((r) => j<{ status: CollectorStatus; analysis: AnalysisInfo }>(r)),
 
   previewCommand: (opts: StartOptions) =>
     fetch("/api/preview-command", {
@@ -61,4 +65,6 @@ export const api = {
 
   downloadUrl: (id: string, rel: string) =>
     `/api/collections/${id}/artifacts/download?rel=${encodeURIComponent(rel)}`,
+
+  analyzeStreamUrl: (id: string) => `/api/collections/${id}/analyze/stream`,
 };

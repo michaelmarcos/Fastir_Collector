@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import analysis
 import collector
 import runs
 
@@ -33,7 +34,7 @@ app.add_middleware(
 )
 
 # Runtime-tunable collector settings (overridable from the UI Settings panel).
-SETTINGS: dict = {"collector_override": None, "interpreter_override": None}
+SETTINGS: dict = {"collector_override": None, "interpreter_override": None, "analysis_api_key": None}
 
 
 def current_status() -> collector.CollectorStatus:
@@ -55,6 +56,7 @@ class StartRequest(BaseModel):
 class SettingsRequest(BaseModel):
     collector_override: str | None = None
     interpreter_override: list[str] | None = None
+    analysis_api_key: str | None = None
 
 
 # --- meta / settings ---------------------------------------------------------
@@ -71,6 +73,7 @@ def meta():
         "status": status.to_dict(),
         "modern_packages": collector.MODERN_PACKAGES,
         "modern_status": collector.modern_status(),
+        "analysis": analysis.availability(SETTINGS),
         "repo_root": str(collector.repo_root()),
     }
 
@@ -79,7 +82,23 @@ def meta():
 def update_settings(req: SettingsRequest):
     SETTINGS["collector_override"] = req.collector_override or None
     SETTINGS["interpreter_override"] = req.interpreter_override or None
-    return {"status": current_status().to_dict()}
+    if req.analysis_api_key is not None:
+        SETTINGS["analysis_api_key"] = req.analysis_api_key or None
+    return {"status": current_status().to_dict(), "analysis": analysis.availability(SETTINGS)}
+
+
+@app.get("/api/analysis-info")
+def analysis_info():
+    return analysis.availability(SETTINGS)
+
+
+@app.get("/api/collections/{run_id}/analyze/stream")
+def analyze_collection(run_id: str):
+    run = runs.registry.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return StreamingResponse(analysis.iter_analysis_sse(run, SETTINGS),
+                             media_type="text/event-stream")
 
 
 @app.post("/api/preview-command")

@@ -36,6 +36,14 @@ export interface ModernStatus {
 
 export type Engine = "fastir" | "modern";
 
+export interface AnalysisInfo {
+  sdk_installed: boolean;
+  has_key: boolean;
+  ai_ready: boolean;
+  model: string;
+  mode: string;
+}
+
 export interface Meta {
   engines: Engine[];
   packages: PackageInfo[];
@@ -45,6 +53,7 @@ export interface Meta {
   status: CollectorStatus;
   modern_packages: PackageInfo[];
   modern_status: ModernStatus;
+  analysis: AnalysisInfo;
   repo_root: string;
 }
 

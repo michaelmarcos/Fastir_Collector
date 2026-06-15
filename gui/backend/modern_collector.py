@@ -353,11 +353,14 @@ def collect_timeline(indicators: list[dict]) -> Result:
     return res
 
 
-def collect_jumplists(indicators: list[dict]) -> Result:
-    res = Result("jumplists", ["type", "app_id", "known_app", "file", "size_bytes", "modified_utc", "sha256"])
+def collect_jumplists(indicators: list[dict]) -> list[Result]:
+    """Enumerate jump-list files AND parse the DestList stream for recent target paths."""
+    files = Result("jumplists", ["type", "app_id", "known_app", "file", "size_bytes", "modified_utc", "sha256"])
+    entries = Result("jumplist_entries",
+                     ["app_id", "known_app", "entry", "access_count", "last_access_utc", "target_path"])
     appdata = os.environ.get("APPDATA")
     if not appdata:
-        return res
+        return [files, entries]
     locations = [
         ("automatic", os.path.join(appdata, r"Microsoft\Windows\Recent\AutomaticDestinations")),
         ("custom", os.path.join(appdata, r"Microsoft\Windows\Recent\CustomDestinations")),
@@ -370,10 +373,145 @@ def collect_jumplists(indicators: list[dict]) -> Result:
             if not os.path.isfile(p):
                 continue
             appid = name.split(".")[0]
+            known = JUMPLIST_APPIDS.get(appid, "")
             st = os.stat(p)
-            res.add(kind, appid, JUMPLIST_APPIDS.get(appid, ""), name, st.st_size,
-                    epoch_to_iso(st.st_mtime), sha256_file(p))
-    return res
+            files.add(kind, appid, known, name, st.st_size, epoch_to_iso(st.st_mtime), sha256_file(p))
+            # Deep parse: AutomaticDestinations are OLE2 compound files with a DestList stream.
+            if kind == "automatic":
+                try:
+                    destlist = _read_ole_stream(p, "DestList")
+                    if destlist:
+                        for e in _parse_destlist(destlist):
+                            entries.add(appid, known, e["entry"], e["access_count"],
+                                        e["last_access"], e["path"])
+                            if suspect_path(e["path"]):
+                                indicators.append(_ind("jumplists", "medium",
+                                                       f"Recent file from suspicious path ({known or appid}): {e['path']}",
+                                                       e["last_access"]))
+                except Exception:
+                    pass
+    return [files, entries]
+
+
+def _parse_destlist(data: bytes) -> list[dict]:
+    """Parse a Jump List DestList stream into MRU entries.
+
+    Common fields (both layouts): entry number @0x58, access count @0x64,
+    last-access FILETIME @0x68. The path-length offset and trailing padding
+    differ by DestList version (header @0x00): v1 puts path_len @0x70 with no
+    trailing field; v3/v4 add pin-status/unknown fields and put path_len @0x7C
+    with a 4-byte trailer.
+    """
+    out: list[dict] = []
+    if len(data) < 0x20:
+        return out
+    version = struct.unpack("<I", data[0:4])[0]
+    # Field offsets shifted across DestList revisions:
+    #   v1     : access@0x64 filetime@0x68 pathlen@0x70 (no trailer)
+    #   v3/v4  : access@0x64 filetime@0x68 pathlen@0x7C (+4 trailer)
+    #   v6+    : filetime@0x64 (no access count)        pathlen@0x80 (+4 trailer)
+    if version >= 5:
+        len_off, time_off, acc_off, trailer = 0x80, 0x64, None, 4
+    elif version >= 3:
+        len_off, time_off, acc_off, trailer = 0x7C, 0x68, 0x64, 4
+    else:
+        len_off, time_off, acc_off, trailer = 0x70, 0x68, 0x64, 0
+    off = 0x20  # skip DestList header
+    while off + len_off + 2 <= len(data):
+        try:
+            entry_no = struct.unpack("<I", data[off + 0x58:off + 0x5C])[0]
+            last = struct.unpack("<Q", data[off + time_off:off + time_off + 8])[0]
+            access = struct.unpack("<I", data[off + acc_off:off + acc_off + 4])[0] if acc_off else 0
+            path_len = struct.unpack("<H", data[off + len_off:off + len_off + 2])[0]
+        except struct.error:
+            break
+        path_start = off + len_off + 2
+        path_end = path_start + path_len * 2
+        if path_len == 0 or path_len > 2048 or path_end > len(data):
+            break
+        path = data[path_start:path_end].decode("utf-16-le", "replace")
+        out.append({"entry": entry_no, "access_count": access,
+                    "last_access": filetime_to_iso(last), "path": path})
+        off = path_end + trailer
+    return out
+
+
+# --- minimal OLE2 / CFBF reader (stdlib only) -------------------------------
+
+def _read_ole_stream(file_path: str, stream_name: str) -> bytes | None:
+    """Extract one named stream from an OLE2 compound file. Returns None if absent."""
+    with open(file_path, "rb") as f:
+        data = f.read()
+    if len(data) < 512 or data[:8] != b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return None
+    sector_shift = struct.unpack("<H", data[0x1E:0x20])[0]
+    mini_shift = struct.unpack("<H", data[0x20:0x22])[0]
+    sector_size = 1 << sector_shift
+    mini_size = 1 << mini_shift
+    mini_cutoff = struct.unpack("<I", data[0x38:0x3C])[0]
+    first_dir = struct.unpack("<i", data[0x30:0x34])[0]
+    first_minifat = struct.unpack("<i", data[0x3C:0x40])[0]
+    num_minifat = struct.unpack("<I", data[0x40:0x44])[0]
+
+    def sector_bytes(sid: int) -> bytes:
+        start = 512 + sid * sector_size
+        return data[start:start + sector_size]
+
+    # Assemble the FAT from the DIFAT (first 109 entries inline; ignore extra DIFAT sectors —
+    # jump lists are small enough that 109 FAT sectors is plenty).
+    fat: list[int] = []
+    for i in range(109):
+        sid = struct.unpack("<i", data[0x4C + i * 4:0x50 + i * 4])[0]
+        if sid < 0:
+            continue
+        sec = sector_bytes(sid)
+        fat.extend(struct.unpack("<%di" % (len(sec) // 4), sec))
+
+    def chain(start: int, getter) -> bytes:
+        out = bytearray()
+        sid = start
+        seen = 0
+        while sid >= 0 and seen < 100000:
+            out += getter(sid)
+            sid = fat[sid] if sid < len(fat) else -1
+            seen += 1
+        return bytes(out)
+
+    # Directory entries.
+    dir_data = chain(first_dir, sector_bytes)
+    entries = []
+    for i in range(0, len(dir_data) - 128 + 1, 128):
+        e = dir_data[i:i + 128]
+        name_len = struct.unpack("<H", e[0x40:0x42])[0]
+        if name_len == 0:
+            continue
+        name = e[:max(0, name_len - 2)].decode("utf-16-le", "replace")
+        etype = e[0x42]
+        start_sid = struct.unpack("<i", e[0x74:0x78])[0]
+        size = struct.unpack("<I", e[0x78:0x7C])[0]
+        entries.append({"name": name, "type": etype, "start": start_sid, "size": size})
+
+    root = next((e for e in entries if e["type"] == 5), None)
+    target = next((e for e in entries if e["name"] == stream_name and e["type"] == 2), None)
+    if not target or root is None:
+        return None
+
+    if target["size"] >= mini_cutoff:
+        return chain(target["start"], sector_bytes)[:target["size"]]
+
+    # Mini-stream: the mini FAT chains within the root entry's mini stream container.
+    mini_container = chain(root["start"], sector_bytes)
+    minifat_data = chain(first_minifat, sector_bytes) if num_minifat else b""
+    minifat = struct.unpack("<%di" % (len(minifat_data) // 4), minifat_data) if minifat_data else ()
+
+    out = bytearray()
+    sid = target["start"]
+    seen = 0
+    while sid >= 0 and seen < 100000:
+        out += mini_container[sid * mini_size:(sid + 1) * mini_size]
+        sid = minifat[sid] if sid < len(minifat) else -1
+        seen += 1
+    return bytes(out[:target["size"]])
 
 
 def collect_defender(indicators: list[dict]) -> Result:
@@ -544,16 +682,17 @@ def _scan_keys(path: str, res: Result, indicators: list[dict], scanned: set) -> 
             break  # one finding per provider per file is enough
 
 
-def collect_recall(indicators: list[dict]) -> Result:
+def collect_recall(indicators: list[dict]) -> list[Result]:
     """Windows 11 Recall: %LOCALAPPDATA%\\CoreAIPlatform.00\\UKP\\<guid>\\ukg.db + ImageStore."""
-    res = Result("windows_recall", ["artifact", "path", "detail", "modified_utc"])
+    meta = Result("windows_recall", ["artifact", "path", "detail", "modified_utc"])
+    captures = Result("recall_window_captures", ["window_title", "app", "captured_utc", "ocr_excerpt"])
     local = os.environ.get("LOCALAPPDATA")
     if not local:
-        return res
+        return [meta, captures]
     base = os.path.join(local, "CoreAIPlatform.00", "UKP")
     if not os.path.isdir(base):
         log("recall: Windows Recall data not present on this host")
-        return res
+        return [meta, captures]
 
     indicators.append(_ind("recall", "high", "Windows Recall is enabled and storing snapshots (privacy/forensic goldmine)", ""))
     for guid in os.listdir(base):
@@ -561,37 +700,68 @@ def collect_recall(indicators: list[dict]) -> Result:
         db = os.path.join(folder, "ukg.db")
         if os.path.isfile(db):
             st = os.stat(db)
-            res.add("ukg.db", db, f"{st.st_size} bytes, sha256={sha256_file(db)}", epoch_to_iso(st.st_mtime))
-            _recall_summarise(db, res)
+            meta.add("ukg.db", db, f"{st.st_size} bytes, sha256={sha256_file(db)}", epoch_to_iso(st.st_mtime))
+            _recall_parse(db, meta, captures, indicators)
         store = os.path.join(folder, "ImageStore")
         if os.path.isdir(store):
             try:
                 imgs = [f for f in os.listdir(store) if os.path.isfile(os.path.join(store, f))]
-                res.add("ImageStore", store, f"{len(imgs)} captured screenshot(s)", "")
+                meta.add("ImageStore", store, f"{len(imgs)} captured screenshot(s)", "")
                 indicators.append(_ind("recall", "high", f"Recall has captured {len(imgs)} screenshots in {store}", ""))
             except OSError:
                 pass
-    return res
+    return [meta, captures]
 
 
-def _recall_summarise(db: str, res: Result) -> None:
-    """Read top-level Recall tables read-only without locking the live DB."""
+def _recall_parse(db: str, meta: Result, captures: Result, indicators: list[dict]) -> None:
+    """Read Recall window-capture rows + OCR text read-only without locking the live DB."""
     import sqlite3
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True)
         cur = con.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [r[0] for r in cur.fetchall()]
+        tables = {r[0] for r in cur.fetchall()}
         for t in ("WindowCapture", "App", "WindowCaptureTextIndex_content"):
             if t in tables:
                 try:
                     cur.execute(f"SELECT COUNT(*) FROM {t}")
-                    res.add("ukg.db:table", t, f"{cur.fetchone()[0]} row(s)", "")
+                    meta.add("ukg.db:table", t, f"{cur.fetchone()[0]} row(s)", "")
                 except sqlite3.Error:
                     pass
+
+        # OCR text lives in an FTS content table; map it back to window captures by rowid.
+        ocr = {}
+        if "WindowCaptureTextIndex_content" in tables:
+            try:
+                cols = [c[1] for c in cur.execute("PRAGMA table_info(WindowCaptureTextIndex_content)")]
+                textcol = next((c for c in cols if c.startswith("c")), None)
+                if textcol:
+                    for rid, text in cur.execute(f"SELECT id, {textcol} FROM WindowCaptureTextIndex_content"):
+                        if text:
+                            ocr[rid] = str(text)
+            except sqlite3.Error:
+                pass
+
+        if "WindowCapture" in tables:
+            wc_cols = {c[1] for c in cur.execute("PRAGMA table_info(WindowCapture)")}
+            title_col = "WindowTitle" if "WindowTitle" in wc_cols else ("Name" if "Name" in wc_cols else None)
+            time_col = next((c for c in ("TimeStamp", "Timestamp", "CaptureTime") if c in wc_cols), None)
+            select = f"Id, {title_col or 'NULL'}, {time_col or 'NULL'} FROM WindowCapture ORDER BY Id DESC LIMIT 2000"
+            for rid, title, ts in cur.execute("SELECT " + select):
+                when = ""
+                if ts:
+                    try:
+                        when = epoch_to_iso(int(ts) / 1000) if int(ts) > 1e12 else epoch_to_iso(int(ts))
+                    except (ValueError, TypeError):
+                        when = str(ts)
+                excerpt = (ocr.get(rid, "") or "")[:300]
+                captures.add(title or "", "", when, excerpt)
+            if captures.rows:
+                indicators.append(_ind("recall", "high",
+                                       f"Extracted {len(captures.rows)} Recall window captures with OCR text", ""))
         con.close()
     except Exception as exc:
-        res.add("ukg.db", db, f"locked/unreadable live: {exc}", "")
+        meta.add("ukg.db", db, f"locked/unreadable live: {exc}", "")
 
 
 # Cryptocurrency wallet footprints: (coin/app, env-relative path, is_wallet_file).
@@ -848,8 +1018,9 @@ def main() -> int:
             log(f"collecting '{pkg}' ...")
         try:
             res = COLLECTORS[pkg](indicators)
-            write_result(res, args.output_dir, args.output_type)
-            log(f"wrote {res.name}: {len(res.rows)} row(s)")
+            for r in (res if isinstance(res, list) else [res]):
+                write_result(r, args.output_dir, args.output_type)
+                log(f"wrote {r.name}: {len(r.rows)} row(s)")
         except Exception:
             log(f"ERROR collecting {pkg}:")
             print(traceback.format_exc(), flush=True)

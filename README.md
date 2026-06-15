@@ -21,7 +21,12 @@ Jump Lists, Defender exclusions, Amcache/SRUM acquisition — plus the newest of
 (Ollama, LM Studio, ChatGPT/Claude desktop) with redacted API-key detection, **Windows 11 Recall** snapshot
 data, and **cryptocurrency wallets** (desktop wallets + browser extensions like MetaMask/Phantom). Every run
 emits a severity-ranked `_indicators` triage file. It runs on plain Python 3, so user-level artefacts collect
-without admin.
+without admin. Artefacts are parsed to their contents (Jump List `DestList` MRU via an OLE2 reader; Timeline
+and Recall SQLite with OCR text), not just enumerated.
+
+An **AI engine** ties it together: press **Analyze (AI)** on any run to have **Claude** (`claude-opus-4-8`,
+streamed) reason over the evidence and propose an attack-chain hypothesis with a MITRE ATT&CK mapping, timeline,
+and next steps — with a deterministic heuristic fallback when no API key is set.
 
 ```
 cd gui

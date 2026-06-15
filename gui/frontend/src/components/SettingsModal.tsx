@@ -1,22 +1,27 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
 import { api } from "../api";
-import type { CollectorStatus } from "../types";
+import type { AnalysisInfo, CollectorStatus } from "../types";
 import { Button, Dot } from "./ui";
 
 export function SettingsModal({
   open,
   status,
+  analysis,
   onClose,
   onUpdated,
+  onAnalysisUpdated,
 }: {
   open: boolean;
   status: CollectorStatus;
+  analysis: AnalysisInfo;
   onClose: () => void;
   onUpdated: (s: CollectorStatus) => void;
+  onAnalysisUpdated: (a: AnalysisInfo) => void;
 }) {
   const [collector, setCollector] = useState(status.collector_path);
   const [interpreter, setInterpreter] = useState(status.interpreter?.join(" ") ?? "");
+  const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -25,8 +30,9 @@ export function SettingsModal({
     setErr(null);
     try {
       const interp = interpreter.trim() ? interpreter.trim().split(/\s+/) : null;
-      const res = await api.updateSettings(collector.trim() || null, interp);
+      const res = await api.updateSettings(collector.trim() || null, interp, apiKey.trim() || null);
       onUpdated(res.status);
+      onAnalysisUpdated(res.analysis);
       onClose();
     } catch (e) {
       setErr((e as Error).message);
@@ -101,6 +107,27 @@ export function SettingsModal({
                     <div key={i}>· {n}</div>
                   ))}
                 </div>
+              </div>
+
+              <div className="border-t border-ink-600/60 pt-4">
+                <Field label="Anthropic API key (AI analysis)">
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={analysis.has_key ? "•••••• (key already set — leave blank to keep)" : "sk-ant-…"}
+                    className="w-full rounded-lg border border-ink-600 bg-ink-900/60 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-acid/50"
+                  />
+                </Field>
+                <p className="mt-1 flex items-center gap-2 font-mono text-[11px] text-slate-500">
+                  <Dot tone={analysis.ai_ready ? "ok" : "warn"} />
+                  {analysis.ai_ready
+                    ? `AI analysis ready — ${analysis.model}`
+                    : analysis.sdk_installed
+                    ? "No API key — AI analysis falls back to heuristic triage"
+                    : "anthropic SDK not installed"}
+                  . Or set the ANTHROPIC_API_KEY environment variable.
+                </p>
               </div>
 
               {err && <p className="font-mono text-[11px] text-danger">{err}</p>}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type StartOptions } from "./api";
+import { AnalysisPanel } from "./components/AnalysisPanel";
 import { ArtifactBrowser } from "./components/ArtifactBrowser";
 import { ConfigPanel, type Config } from "./components/ConfigPanel";
 import { Console } from "./components/Console";
@@ -49,6 +50,7 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [artifactRun, setArtifactRun] = useState<RunSummary | null>(null);
+  const [analysisRun, setAnalysisRun] = useState<RunSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
@@ -151,6 +153,12 @@ export default function App() {
     setArtifactRun(full);
   };
 
+  const openAnalysis = async () => {
+    if (!activeId) return;
+    const full = await api.get(activeId);
+    setAnalysisRun(full);
+  };
+
   const activeRun = useMemo(() => runs.find((r) => r.id === activeId) ?? null, [runs, activeId]);
 
   const modern = meta?.modern_status;
@@ -247,9 +255,14 @@ export default function App() {
                   ? "collecting…"
                   : `${activeRun.artifacts?.length ?? 0} artifact(s) · rc ${activeRun.return_code}`}
               </span>
-              <Button variant="ghost" onClick={openArtifacts} disabled={activeRun.status === "running"}>
-                ⌗ Browse artifacts
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" onClick={openAnalysis} disabled={activeRun.status === "running"}>
+                  ⌬ Analyze (AI)
+                </Button>
+                <Button variant="ghost" onClick={openArtifacts} disabled={activeRun.status === "running"}>
+                  ⌗ Browse artifacts
+                </Button>
+              </div>
             </div>
           )}
         </div>
@@ -262,10 +275,13 @@ export default function App() {
       <SettingsModal
         open={settingsOpen}
         status={status}
+        analysis={meta.analysis}
         onClose={() => setSettingsOpen(false)}
         onUpdated={(s) => setStatus(s)}
+        onAnalysisUpdated={(a) => setMeta({ ...meta, analysis: a })}
       />
       <ArtifactBrowser run={artifactRun} onClose={() => setArtifactRun(null)} />
+      <AnalysisPanel run={analysisRun} onClose={() => setAnalysisRun(null)} />
     </div>
   );
 }

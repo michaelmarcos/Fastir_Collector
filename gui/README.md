@@ -74,6 +74,31 @@ flags suspicious findings (execution from temp/appdata, encoded PowerShell, Defe
 exclusions, leaked API keys, crypto wallets, Recall snapshots). The collector is
 read-only and never emits secrets in clear text.
 
+**Deep parsing.** Beyond enumeration, the modern engine parses artifacts to their
+contents: **Jump Lists** are read as OLE2 compound files and their `DestList` MRU
+stream is decoded (v1/v3/v6 layouts) into recent-file paths, access counts, and
+timestamps; **Windows Timeline** and **Recall** SQLite databases are read read-only
+(`immutable=1`) with Recall's window-capture rows and OCR text extracted; **ShimCache**
+is parsed from its binary registry blob.
+
+## AI engine — attack-chain hypothesis
+
+After any run, press **⌬ Analyze (AI)** to have the app reason over the collected
+evidence and propose a likely attack chain. It digests the artifacts (indicators +
+sampled rows), sends them to **Claude (`claude-opus-4-8`, adaptive thinking)** via the
+official Anthropic SDK, and **streams** a structured analyst report back into the panel:
+
+- **Verdict** (benign / suspicious / likely-malicious + confidence)
+- **Attack-chain hypothesis** (evidence-linked narrative)
+- **MITRE ATT&CK mapping** (tactic · technique · evidence)
+- **Timeline** and **Recommended next steps**
+
+Set an API key in **⚙ Settings** (or the `ANTHROPIC_API_KEY` env var). With **no key**,
+the panel falls back to a deterministic **heuristic triage** (severity-grouped indicators
+with a rule-based ATT&CK mapping) so the feature still works offline. The prompt instructs
+the model to produce **hypotheses, not conclusions**, and tie every claim to evidence;
+detected API keys are redacted before they ever leave the host.
+
 ## Quick start
 
 From this `gui/` folder:
@@ -146,5 +171,7 @@ backend auto-serves `frontend/dist`.
 | POST | `/api/collections/{id}/stop` | Terminate a running collection |
 | GET | `/api/collections/{id}/artifacts/preview?rel=` | Parsed CSV/JSON preview |
 | GET | `/api/collections/{id}/artifacts/download?rel=` | Download an artifact |
+| GET | `/api/collections/{id}/analyze/stream` | SSE stream of the AI attack-chain analysis |
+| GET | `/api/analysis-info` | Whether AI analysis is ready (SDK + key) or heuristic |
 
 Runs and their output are stored under `backend/_runs/<id>/` (git-ignored).
