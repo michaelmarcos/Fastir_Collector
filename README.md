@@ -4,6 +4,25 @@
 This tool collects different artefacts on live Windows and records the results in csv or json files. With the analyses
 of these artefacts, an early compromission can be detected.
 
+## Web Console (GUI)
+A fast, fluid local web GUI is available in [`gui/`](gui/). It drives the **real** collector — no forensic logic is
+reimplemented — by building the exact `main.py` command line for you, launching it, streaming its output live, and
+letting you browse the resulting CSV/JSON artefacts from the browser.
+
+- **Backend** — FastAPI (Python 3): detects the collector + interpreter, builds the argv, runs it as a subprocess,
+  streams stdout over SSE, serves artefacts.
+- **Frontend** — Vite + React + TypeScript + Tailwind: package/dump selection, live command preview, a streaming log
+  console, run history, and a CSV/JSON artefact viewer.
+- **Demo stub** — speaks the same CLI so the UI can be explored on any OS without Python 2 / Windows / admin.
+
+```
+cd gui
+./run.ps1          # Windows; run as administrator for a real collection
+# then open http://127.0.0.1:8099
+```
+
+See [`gui/README.md`](gui/README.md) for setup (real collection vs. demo stub) and the full API.
+
 ## Downloads
 Binaries can be found in the [release page](https://github.com/SekoiaLab/Fastir_Collector/releases) of this project.
 
