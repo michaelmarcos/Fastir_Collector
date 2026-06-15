@@ -51,7 +51,27 @@ A markdown table: | Tactic | Technique (ID) | Evidence |
 A few key timestamped events in order (or "Insufficient timestamped evidence.").
 ## Recommended next steps
 3-6 concrete, prioritised actions for the responder.
+
+After the Markdown, append a single machine-readable block on its own line, wrapped in an HTML
+comment so it stays invisible to the reader, with this exact shape:
+<!--ATTACK_JSON {"verdict":"benign|suspicious|likely-malicious","confidence":"low|medium|high","techniques":[{"tactic":"...","technique_id":"Txxxx","technique_name":"...","evidence":"...","confidence":"low|medium|high"}]} -->
+The techniques array must match your ATT&CK table. Output valid minified JSON; if there are no
+techniques, use an empty array.
 """
+
+import re
+
+_ATTACK_RE = re.compile(r"<!--ATTACK_JSON\s*(\{.*?\})\s*-->", re.DOTALL)
+
+
+def _extract_structured(text: str) -> dict | None:
+    m = _ATTACK_RE.search(text)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -243,19 +263,48 @@ def _heuristic_report(run, evidence: str) -> str:
     return "\n".join(lines)
 
 
+def _heuristic_structured(run) -> dict:
+    out_dir = Path(run.output_dir)
+    indicators = []
+    for f in out_dir.rglob("_indicators.csv"):
+        try:
+            with f.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+                indicators = list(csv.DictReader(fh))
+        except Exception:
+            pass
+    high = [i for i in indicators if i.get("severity") == "high"]
+    med = [i for i in indicators if i.get("severity") == "medium"]
+    verdict = "likely-malicious" if len(high) >= 5 else "suspicious" if (high or med) else "benign"
+    techniques, seen = [], set()
+    for i in (high + med):
+        art = i.get("artifact", "")
+        if art in _HEURISTIC_ATTACK and art not in seen:
+            seen.add(art)
+            tac, tech = _HEURISTIC_ATTACK[art]
+            tid, tname = tech.split(" ", 1)
+            techniques.append({"tactic": tac, "technique_id": tid, "technique_name": tname,
+                               "evidence": f"{art} indicators",
+                               "confidence": "high" if any(x.get("artifact") == art for x in high) else "low"})
+    return {"verdict": verdict, "confidence": "low", "techniques": techniques}
+
+
 def iter_analysis_sse(run, settings: dict | None = None):
     """Yield SSE-formatted chunks of the analysis (Claude if available, else heuristic)."""
     avail = availability(settings)
     yield f"event: meta\ndata: {json.dumps(avail)}\n\n"
     mode = avail["mode"]
+    structured: dict | None = None
     try:
         evidence = gather_evidence(run)
         streamed = False
         if avail["ai_ready"]:
             try:
+                full = ""
                 for text in _stream_claude(evidence, _api_key(settings)):
                     streamed = True
+                    full += text
                     yield f"event: delta\ndata: {json.dumps(text)}\n\n"
+                structured = _extract_structured(full)
             except Exception as exc:
                 if streamed:
                     raise  # mid-stream failure — surface it
@@ -265,10 +314,15 @@ def iter_analysis_sse(run, settings: dict | None = None):
                 report = note + _heuristic_report(run, evidence)
                 for i in range(0, len(report), 400):
                     yield f"event: delta\ndata: {json.dumps(report[i:i + 400])}\n\n"
+                structured = _heuristic_structured(run)
         else:
             report = _heuristic_report(run, evidence)
             for i in range(0, len(report), 400):
                 yield f"event: delta\ndata: {json.dumps(report[i:i + 400])}\n\n"
+            structured = _heuristic_structured(run)
+
+        if structured:
+            yield f"event: structured\ndata: {json.dumps(structured)}\n\n"
         yield f"event: done\ndata: {json.dumps({'mode': mode})}\n\n"
     except Exception as exc:
         yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"

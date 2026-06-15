@@ -36,6 +36,20 @@ export interface ModernStatus {
 
 export type Engine = "fastir" | "modern";
 
+export interface AttackTechnique {
+  tactic: string;
+  technique_id: string;
+  technique_name: string;
+  evidence: string;
+  confidence: string;
+}
+
+export interface AttackAssessment {
+  verdict: string;
+  confidence: string;
+  techniques: AttackTechnique[];
+}
+
 export interface AnalysisInfo {
   sdk_installed: boolean;
   has_key: boolean;

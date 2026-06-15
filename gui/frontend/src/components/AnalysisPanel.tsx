@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { marked } from "marked";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AnalysisInfo, RunSummary } from "../types";
+import type { AnalysisInfo, AttackAssessment, RunSummary } from "../types";
 import { Button, Dot, Pill } from "./ui";
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -17,6 +17,7 @@ export function AnalysisPanel({
   const [markdown, setMarkdown] = useState("");
   const [state, setState] = useState<"idle" | "thinking" | "streaming" | "done" | "error">("idle");
   const [meta, setMeta] = useState<AnalysisInfo | null>(null);
+  const [assessment, setAssessment] = useState<AttackAssessment | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -24,11 +25,13 @@ export function AnalysisPanel({
   const start = (id: string) => {
     esRef.current?.close();
     setMarkdown("");
+    setAssessment(null);
     setErrorMsg(null);
     setState("thinking");
     const es = new EventSource(api.analyzeStreamUrl(id));
     esRef.current = es;
     es.addEventListener("meta", (e) => setMeta(JSON.parse((e as MessageEvent).data)));
+    es.addEventListener("structured", (e) => setAssessment(JSON.parse((e as MessageEvent).data)));
     es.addEventListener("delta", (e) => {
       setState("streaming");
       setMarkdown((prev) => prev + (JSON.parse((e as MessageEvent).data) as string));
@@ -59,7 +62,15 @@ export function AnalysisPanel({
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [markdown]);
 
-  const html = markdown ? (marked.parse(markdown) as string) : "";
+  const cleanMd = markdown.replace(/<!--ATTACK_JSON[\s\S]*?-->/g, "").trimEnd();
+  const html = cleanMd ? (marked.parse(cleanMd) as string) : "";
+
+  const verdictTone =
+    assessment?.verdict === "likely-malicious"
+      ? "bad"
+      : assessment?.verdict === "suspicious"
+      ? "warn"
+      : "ok";
 
   return (
     <AnimatePresence>
@@ -101,6 +112,36 @@ export function AnalysisPanel({
                 </Button>
               </div>
             </header>
+
+            {assessment && (
+              <div className="border-b border-ink-600 bg-ink-900/40 px-5 py-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <Pill tone={verdictTone}>
+                    <Dot tone={verdictTone} />
+                    {assessment.verdict}
+                  </Pill>
+                  <span className="font-mono text-[11px] text-slate-500">
+                    confidence: {assessment.confidence} · {assessment.techniques.length} ATT&CK technique(s)
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {assessment.techniques.map((t, i) => (
+                    <span
+                      key={i}
+                      title={`${t.tactic} · ${t.technique_name} — ${t.evidence} (confidence ${t.confidence})`}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-acid/30 bg-acid/[0.06] px-2 py-0.5 font-mono text-[10px] text-slate-300"
+                    >
+                      <span className="text-acid">{t.technique_id}</span>
+                      <span className="text-slate-500">·</span>
+                      {t.tactic}
+                    </span>
+                  ))}
+                  {assessment.techniques.length === 0 && (
+                    <span className="font-mono text-[10px] text-slate-600">no mapped techniques</span>
+                  )}
+                </div>
+              </div>
+            )}
 
             <div ref={bodyRef} className="prose-ir min-h-0 flex-1 overflow-y-auto px-6 py-5">
               {state === "thinking" && !markdown && (

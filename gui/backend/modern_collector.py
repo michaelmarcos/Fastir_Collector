@@ -358,9 +358,12 @@ def collect_jumplists(indicators: list[dict]) -> list[Result]:
     files = Result("jumplists", ["type", "app_id", "known_app", "file", "size_bytes", "modified_utc", "sha256"])
     entries = Result("jumplist_entries",
                      ["app_id", "known_app", "entry", "access_count", "last_access_utc", "target_path"])
+    lnks = Result("jumplist_lnk_targets",
+                  ["app_id", "known_app", "stream", "target", "arguments", "working_dir",
+                   "file_size", "write_time_utc", "creation_time_utc"])
     appdata = os.environ.get("APPDATA")
     if not appdata:
-        return [files, entries]
+        return [files, entries, lnks]
     locations = [
         ("automatic", os.path.join(appdata, r"Microsoft\Windows\Recent\AutomaticDestinations")),
         ("custom", os.path.join(appdata, r"Microsoft\Windows\Recent\CustomDestinations")),
@@ -376,7 +379,8 @@ def collect_jumplists(indicators: list[dict]) -> list[Result]:
             known = JUMPLIST_APPIDS.get(appid, "")
             st = os.stat(p)
             files.add(kind, appid, known, name, st.st_size, epoch_to_iso(st.st_mtime), sha256_file(p))
-            # Deep parse: AutomaticDestinations are OLE2 compound files with a DestList stream.
+            # Deep parse: AutomaticDestinations are OLE2 compound files. The DestList
+            # stream holds the MRU index; the numbered streams are individual LNKs.
             if kind == "automatic":
                 try:
                     destlist = _read_ole_stream(p, "DestList")
@@ -390,7 +394,25 @@ def collect_jumplists(indicators: list[dict]) -> list[Result]:
                                                        e["last_access"]))
                 except Exception:
                     pass
-    return [files, entries]
+                try:
+                    streams = _read_ole_streams(p, lambda n: n != "DestList"
+                                                and 0 < len(n) <= 10
+                                                and all(c in "0123456789abcdef" for c in n.lower()))
+                    for sname, blob in sorted(streams.items()):
+                        info = _parse_lnk(blob)
+                        if info and info.get("target"):
+                            lnks.add(appid, known, sname, info["target"], info["arguments"],
+                                     info["working_dir"], info["file_size"],
+                                     info["write_time"], info["creation_time"])
+                            blob_low = (info["target"] + " " + info["arguments"]).lower()
+                            if suspect_path(info["target"]) or any(s in blob_low for s in SUSPECT_PS):
+                                indicators.append(_ind("jumplists", "high",
+                                                       f"Suspicious jump-list LNK ({known or appid}): "
+                                                       f"{info['target']} {info['arguments']}".strip(),
+                                                       info["write_time"]))
+                except Exception:
+                    pass
+    return [files, entries, lnks]
 
 
 def _parse_destlist(data: bytes) -> list[dict]:
@@ -438,10 +460,12 @@ def _parse_destlist(data: bytes) -> list[dict]:
 
 # --- minimal OLE2 / CFBF reader (stdlib only) -------------------------------
 
-def _read_ole_stream(file_path: str, stream_name: str) -> bytes | None:
-    """Extract one named stream from an OLE2 compound file. Returns None if absent."""
-    with open(file_path, "rb") as f:
-        data = f.read()
+def _ole_index(data: bytes):
+    """Parse an OLE2 compound file once; return (entries, read_stream_fn) or None.
+
+    read_stream_fn(entry) returns the bytes of a directory stream entry, handling
+    both the regular FAT and the mini-FAT (for streams below the mini cutoff).
+    """
     if len(data) < 512 or data[:8] != b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
         return None
     sector_shift = struct.unpack("<H", data[0x1E:0x20])[0]
@@ -457,8 +481,8 @@ def _read_ole_stream(file_path: str, stream_name: str) -> bytes | None:
         start = 512 + sid * sector_size
         return data[start:start + sector_size]
 
-    # Assemble the FAT from the DIFAT (first 109 entries inline; ignore extra DIFAT sectors —
-    # jump lists are small enough that 109 FAT sectors is plenty).
+    # Assemble the FAT from the DIFAT (first 109 entries inline; ignore extra DIFAT
+    # sectors — jump lists are small enough that 109 FAT sectors is plenty).
     fat: list[int] = []
     for i in range(109):
         sid = struct.unpack("<i", data[0x4C + i * 4:0x50 + i * 4])[0]
@@ -469,15 +493,13 @@ def _read_ole_stream(file_path: str, stream_name: str) -> bytes | None:
 
     def chain(start: int, getter) -> bytes:
         out = bytearray()
-        sid = start
-        seen = 0
+        sid, seen = start, 0
         while sid >= 0 and seen < 100000:
             out += getter(sid)
             sid = fat[sid] if sid < len(fat) else -1
             seen += 1
         return bytes(out)
 
-    # Directory entries.
     dir_data = chain(first_dir, sector_bytes)
     entries = []
     for i in range(0, len(dir_data) - 128 + 1, 128):
@@ -485,33 +507,115 @@ def _read_ole_stream(file_path: str, stream_name: str) -> bytes | None:
         name_len = struct.unpack("<H", e[0x40:0x42])[0]
         if name_len == 0:
             continue
-        name = e[:max(0, name_len - 2)].decode("utf-16-le", "replace")
-        etype = e[0x42]
-        start_sid = struct.unpack("<i", e[0x74:0x78])[0]
-        size = struct.unpack("<I", e[0x78:0x7C])[0]
-        entries.append({"name": name, "type": etype, "start": start_sid, "size": size})
+        entries.append({
+            "name": e[:max(0, name_len - 2)].decode("utf-16-le", "replace"),
+            "type": e[0x42],
+            "start": struct.unpack("<i", e[0x74:0x78])[0],
+            "size": struct.unpack("<I", e[0x78:0x7C])[0],
+        })
 
     root = next((e for e in entries if e["type"] == 5), None)
-    target = next((e for e in entries if e["name"] == stream_name and e["type"] == 2), None)
-    if not target or root is None:
-        return None
-
-    if target["size"] >= mini_cutoff:
-        return chain(target["start"], sector_bytes)[:target["size"]]
-
-    # Mini-stream: the mini FAT chains within the root entry's mini stream container.
-    mini_container = chain(root["start"], sector_bytes)
+    mini_container = chain(root["start"], sector_bytes) if root else b""
     minifat_data = chain(first_minifat, sector_bytes) if num_minifat else b""
     minifat = struct.unpack("<%di" % (len(minifat_data) // 4), minifat_data) if minifat_data else ()
 
-    out = bytearray()
-    sid = target["start"]
-    seen = 0
-    while sid >= 0 and seen < 100000:
-        out += mini_container[sid * mini_size:(sid + 1) * mini_size]
-        sid = minifat[sid] if sid < len(minifat) else -1
-        seen += 1
-    return bytes(out[:target["size"]])
+    def read_stream(entry) -> bytes:
+        if entry["size"] >= mini_cutoff:
+            return chain(entry["start"], sector_bytes)[:entry["size"]]
+        out = bytearray()
+        sid, seen = entry["start"], 0
+        while sid >= 0 and seen < 100000:
+            out += mini_container[sid * mini_size:(sid + 1) * mini_size]
+            sid = minifat[sid] if sid < len(minifat) else -1
+            seen += 1
+        return bytes(out[:entry["size"]])
+
+    return entries, read_stream
+
+
+def _read_ole_stream(file_path: str, stream_name: str) -> bytes | None:
+    """Extract one named stream from an OLE2 compound file. Returns None if absent."""
+    with open(file_path, "rb") as f:
+        idx = _ole_index(f.read())
+    if not idx:
+        return None
+    entries, read = idx
+    target = next((e for e in entries if e["name"] == stream_name and e["type"] == 2), None)
+    return read(target) if target else None
+
+
+def _read_ole_streams(file_path: str, predicate) -> dict:
+    """Return {name: bytes} for every stream whose name satisfies `predicate`."""
+    with open(file_path, "rb") as f:
+        idx = _ole_index(f.read())
+    if not idx:
+        return {}
+    entries, read = idx
+    return {e["name"]: read(e) for e in entries if e["type"] == 2 and predicate(e["name"])}
+
+
+def _parse_lnk(data: bytes) -> dict | None:
+    """Parse a Windows Shell Link (MS-SHLLINK) for target, arguments, and timestamps."""
+    if len(data) < 0x4C or data[0:4] != b"\x4c\x00\x00\x00":
+        return None
+    try:
+        flags = struct.unpack("<I", data[0x14:0x18])[0]
+        ctime = struct.unpack("<Q", data[0x1C:0x24])[0]
+        wtime = struct.unpack("<Q", data[0x2C:0x34])[0]
+        fsize = struct.unpack("<I", data[0x34:0x38])[0]
+        off = 0x4C
+
+        # HasLinkTargetIDList (0x01): skip the shell item id list.
+        if flags & 0x01:
+            off += 2 + struct.unpack("<H", data[off:off + 2])[0]
+
+        # HasLinkInfo (0x02): the LinkInfo structure carries the local base path.
+        target = ""
+        if flags & 0x02:
+            li = off
+            li_size = struct.unpack("<I", data[li:li + 4])[0]
+            li_header = struct.unpack("<I", data[li + 4:li + 8])[0]
+            li_flags = struct.unpack("<I", data[li + 8:li + 12])[0]
+            if li_flags & 0x01:  # VolumeIDAndLocalBasePath present
+                if li_header >= 0x24:  # unicode local base path
+                    uoff = struct.unpack("<I", data[li + 0x1C:li + 0x20])[0]
+                    if uoff:
+                        s = li + uoff
+                        end = data.find(b"\x00\x00", s)
+                        target = data[s:end if end > 0 else s].decode("utf-16-le", "replace")
+                if not target:  # ANSI local base path
+                    boff = struct.unpack("<I", data[li + 0x10:li + 0x14])[0]
+                    if boff:
+                        s = li + boff
+                        end = data.find(b"\x00", s)
+                        enc = "mbcs" if os.name == "nt" else "latin-1"
+                        target = data[s:end if end > 0 else s].decode(enc, "replace")
+            off = li + li_size
+
+        # StringData, in spec order: NAME / RELATIVE_PATH / WORKING_DIR / ARGUMENTS / ICON.
+        unicode_strs = bool(flags & 0x80)
+
+        def read_str() -> str:
+            nonlocal off
+            cnt = struct.unpack("<H", data[off:off + 2])[0]
+            off += 2
+            if unicode_strs:
+                s = data[off:off + cnt * 2].decode("utf-16-le", "replace"); off += cnt * 2
+            else:
+                s = data[off:off + cnt].decode("latin-1", "replace"); off += cnt
+            return s
+
+        name = read_str() if flags & 0x04 else ""
+        relative = read_str() if flags & 0x08 else ""
+        working = read_str() if flags & 0x10 else ""
+        args = read_str() if flags & 0x20 else ""
+        if not target:
+            target = relative or working
+        return {"target": target, "arguments": args, "working_dir": working, "name": name,
+                "file_size": fsize, "creation_time": filetime_to_iso(ctime),
+                "write_time": filetime_to_iso(wtime)}
+    except Exception:
+        return None
 
 
 def collect_defender(indicators: list[dict]) -> Result:

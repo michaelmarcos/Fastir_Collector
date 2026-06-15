@@ -75,11 +75,12 @@ exclusions, leaked API keys, crypto wallets, Recall snapshots). The collector is
 read-only and never emits secrets in clear text.
 
 **Deep parsing.** Beyond enumeration, the modern engine parses artifacts to their
-contents: **Jump Lists** are read as OLE2 compound files and their `DestList` MRU
-stream is decoded (v1/v3/v6 layouts) into recent-file paths, access counts, and
-timestamps; **Windows Timeline** and **Recall** SQLite databases are read read-only
-(`immutable=1`) with Recall's window-capture rows and OCR text extracted; **ShimCache**
-is parsed from its binary registry blob.
+contents: **Jump Lists** are read as OLE2 compound files — the `DestList` MRU stream is
+decoded (v1/v3/v6 layouts) into recent-file paths/counts/timestamps, and each numbered
+**LNK** stream is parsed (MS-SHLLINK) for its target path, arguments, working directory,
+file size, and creation/write times; **Windows Timeline** and **Recall** SQLite databases
+are read read-only (`immutable=1`) with Recall's window-capture rows and OCR text
+extracted; **ShimCache** is parsed from its binary registry blob.
 
 ## AI engine — attack-chain hypothesis
 
@@ -92,6 +93,12 @@ official Anthropic SDK, and **streams** a structured analyst report back into th
 - **Attack-chain hypothesis** (evidence-linked narrative)
 - **MITRE ATT&CK mapping** (tactic · technique · evidence)
 - **Timeline** and **Recommended next steps**
+
+Alongside the narrative the model emits a **structured ATT&CK assessment** (verdict,
+confidence, and a techniques array), which the panel renders as a verdict badge and a
+strip of technique chips at the top. It travels in an HTML comment so it stays invisible
+in the prose; the backend parses it and the heuristic fallback produces the same shape
+deterministically.
 
 Set an API key in **⚙ Settings** (or the `ANTHROPIC_API_KEY` env var). With **no key**,
 the panel falls back to a deterministic **heuristic triage** (severity-grouped indicators
