@@ -6,17 +6,35 @@
 > 2015-era tool never covered**, and bolts on an **AI engine** that reasons over the evidence to propose an
 > attack-chain hypothesis.
 
+![FastIR Collector 2.0 console](gui/docs/screenshots/01-console.png)
+
 ## Concepts
 
 FastIR Collector gathers artefacts from a live Windows system and records them as CSV or JSON. By analysing those
 artefacts an early compromise can be detected. 2.0 makes that workflow faster and far broader:
 
 - **Drive the real collector from a browser** — no more remembering CLI flags.
-- **Collect modern evidence** — Windows Recall, local AI/LLM tooling, cryptocurrency wallets, execution caches,
-  and more — that simply did not exist when the original tool was written.
+- **Collect modern evidence** — Windows Recall, local AI/LLM tooling, cryptocurrency wallets, execution caches, and
+  more — that simply did not exist when the original tool was written.
 - **Get a head start on analysis** — an AI engine turns raw artefacts into a ranked, ATT&CK-mapped hypothesis.
 
 Nothing about the original forensic logic was changed; 2.0 only **adds** around it.
+
+---
+
+## FastIR 1.x vs 2.0 at a glance
+
+| | FastIR Collector 1.x | **FastIR Collector 2.0** |
+|---|---|---|
+| **Interface** | Command line only | Web console **+** the original CLI |
+| **Runtime** | Python 2 (compiled `.exe`) | Py2 collector **+** a native **Python 3** modern engine |
+| **Output** | CSV / JSON files on disk | Live-streamed console, in-app artefact browser, CSV / JSON files |
+| **Artefact scope** | 2015-era (fs, health, registry, memory, evt, dump, FileCatcher) | All of 1.x **+ 14 modern collectors** (Recall, AI/LLM, crypto, BAM, ShimCache, Jump Lists, Timeline, …) |
+| **Parsing depth** | Enumeration + classic parsers | Deep parsing: OLE2 `DestList` **+** `LNK` targets, SQLite Timeline/Recall **+ OCR**, ShimCache blob |
+| **Triage** | Manual review of CSVs | Auto **severity-ranked `_indicators`** per run |
+| **Analysis** | Performed by the analyst | **AI engine**: attack-chain hypothesis, MITRE ATT&CK mapping + matrix, per-row "explain this" |
+| **Try it anywhere** | Needs Windows + admin + Python 2 | A bundled **demo stub** runs on any OS, no dependencies |
+| **Tests** | — | **48** automated tests |
 
 ---
 
@@ -37,6 +55,22 @@ Nothing about the original forensic logic was changed; 2.0 only **adds** around 
 
 > The console and everything above live in [`gui/`](gui/). See **[gui/README.md](gui/README.md)** for the full
 > architecture, API reference, and setup details.
+
+---
+
+## Screenshots
+
+> The captures below use the bundled **demo stub** (synthetic data), so no real host data is shown.
+
+| Live collection | AI attack-chain analysis |
+|---|---|
+| ![Live console streaming collector output](gui/docs/screenshots/02-live-console.png) | ![AI attack-chain report with MITRE ATT&CK mapping](gui/docs/screenshots/03-ai-analysis.png) |
+| Pick an engine + packages and watch the collector stream live. | Claude proposes a verdict, attack-chain, and ATT&CK mapping. |
+
+| ATT&CK matrix | Explain an artefact row |
+|---|---|
+| ![ATT&CK Navigator-style matrix](gui/docs/screenshots/04-attack-matrix.png) | ![Per-row AI explanation in the artifact browser](gui/docs/screenshots/05-explain-row.png) |
+| Detected techniques laid out Navigator-style, coloured by confidence. | Click any row to have the AI explain that specific entry. |
 
 ---
 
@@ -130,23 +164,19 @@ cd gui/backend
 
 The original command-line tool is unchanged and still available.
 
-### Downloads
-Binaries can be found on the [release page](https://github.com/SekoiaLab/Fastir_Collector/releases) of the upstream project.
+- **Downloads** — binaries are on the upstream [release page](https://github.com/SekoiaLab/Fastir_Collector/releases).
+- **Requirements** — pywin32, python WMI, python psutil, python yaml, construct, distorm3, hexdump, pytz (a `pip freeze` is in `reqs.pip`).
+- **Compiling** — with [PyInstaller](https://github.com/pyinstaller/pyinstaller): `pyinstaller pyinstaller.spec` at the repo root; the binary lands in `/dist`. On x64, make sure your Python is x64 too.
 
-### Requirements
-pywin32, python WMI, python psutil, python yaml, construct, distorm3, hexdump, pytz — a `pip freeze` output is available in `reqs.pip`.
+```text
+./fastIR_x64.exe -h                                      # help
+./fastIR_x64.exe --packages fast                         # all artefacts except dump and FileCatcher
+./fastIR_x64.exe --packages dump --dump mft              # extract the MFT
+./fastIR_x64.exe --packages all --output_dir <dir>       # full collection to a custom directory
+./fastIR_x64.exe --profile <profile.conf>                # custom extraction profile
+```
 
-### Compiling
-To compile FastIR you need [PyInstaller](https://github.com/pyinstaller/pyinstaller): run `pyinstaller pyinstaller.spec` at the project root. The binary lands in `/dist`. For x64 systems, make sure your local Python is also x64.
-
-### Execution
-- `./fastIR_x64.exe -h` — help
-- `./fastIR_x64.exe --packages fast` — all artefacts except dump and FileCatcher
-- `./fastIR_x64.exe --packages dump --dump mft` — extract the MFT
-- `./fastIR_x64.exe --packages all --output_dir your_output_dir` — full collection to a custom directory
-- `./fastIR_x64.exe --profile your_profile.conf` — use a custom extraction profile ([wiki](https://github.com/SekoiaLab/Fastir_Collector/wiki/Create-a-profile))
-
-The full original documentation is available [here](https://github.com/SekoiaLab/Fastir_Collector/blob/master/documentation/FastIR_Documentation.pdf), and there is a [blog post](http://www.sekoia.fr/blog/fastir-collector-on-advanced-threats) with its [white paper](http://www.sekoia.fr/blog/wp-content/uploads/2015/11/FastIR-Collector-on-advanced-threats_v1.5.pdf).
+Profile docs are in the upstream [wiki](https://github.com/SekoiaLab/Fastir_Collector/wiki/Create-a-profile).
 
 ---
 

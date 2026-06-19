@@ -108,7 +108,50 @@ def main():
             with open(os.path.join(args.output_dir, f"dump_{d}.txt"), "w", encoding="utf-8") as f:
                 f.write(f"stub {d} dump placeholder\n")
 
+    # Demo-only synthetic outputs so the AI/heuristic analysis has signal to chew on.
+    # None of this is real — it is fabricated to exercise the analysis + matrix UI.
+    write_demo_signal(args.output_dir, args.output_type)
+
     print(f"FastIR - INFO - Check here {os.path.abspath(args.output_dir)} for your results", flush=True)
+
+
+# Fabricated triage findings (demo only — not real host data).
+DEMO_INDICATORS = [
+    ["high", "pshistory", "Suspicious PowerShell (-enc): powershell -nop -w hidden -enc SQBFAFgA...", "2026-06-19T01:04:55+00:00"],
+    ["high", "defender", "Defender Paths exclusion set: C:\\ProgramData\\svc", "2026-06-19T01:05:10+00:00"],
+    ["high", "crypto", "Browser wallet extension MetaMask in profile 'Default'", "2026-06-19T01:06:00+00:00"],
+    ["medium", "bam", "Execution from suspicious path: C:\\Users\\Public\\runner.exe", "2026-06-19T01:02:00+00:00"],
+    ["medium", "aiapps", "Local AI/LLM tool present: ollama (C:\\Users\\analyst\\.ollama)", "2026-06-18T22:10:00+00:00"],
+    ["high", "recall", "Windows Recall is enabled and storing snapshots", "2026-06-19T00:00:00+00:00"],
+]
+
+DEMO_PSHISTORY = [
+    ["analyst", "1", "whoami /all"],
+    ["analyst", "2", "powershell -nop -w hidden -enc SQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0AC4ALgAu"],
+    ["analyst", "3", "net user backdoor P@ssw0rd /add"],
+    ["analyst", "4", "Add-MpPreference -ExclusionPath C:\\ProgramData\\svc"],
+]
+
+
+def write_demo_signal(out_dir, output_type):
+    _write(out_dir, "_indicators", ["severity", "artifact", "detail", "timestamp_utc"],
+           DEMO_INDICATORS, output_type)
+    _write(out_dir, "powershell_history", ["user", "line", "command"],
+           DEMO_PSHISTORY, output_type)
+    high = sum(1 for i in DEMO_INDICATORS if i[0] == "high")
+    print(f"FastIR - INFO - triage indicators: {len(DEMO_INDICATORS)} ({high} high-severity)", flush=True)
+
+
+def _write(out_dir, name, header, rows, output_type):
+    base = os.path.join(out_dir, name)
+    if output_type == "json":
+        with open(base + ".json", "w", encoding="utf-8") as f:
+            json.dump([dict(zip(header, r)) for r in rows], f, indent=2)
+    else:
+        with open(base + ".csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            w.writerows(rows)
 
 
 if __name__ == "__main__":
