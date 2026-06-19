@@ -1,4 +1,4 @@
-# FastIR Collector
+# FastIR Collector 2.0
 
 ## Concepts
 This tool collects different artefacts on live Windows and records the results in csv or json files. With the analyses
