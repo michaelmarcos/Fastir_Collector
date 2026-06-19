@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import analysis
 import collector
 import runs
 
@@ -33,7 +34,7 @@ app.add_middleware(
 )
 
 # Runtime-tunable collector settings (overridable from the UI Settings panel).
-SETTINGS: dict = {"collector_override": None, "interpreter_override": None}
+SETTINGS: dict = {"collector_override": None, "interpreter_override": None, "analysis_api_key": None}
 
 
 def current_status() -> collector.CollectorStatus:
@@ -44,6 +45,7 @@ def current_status() -> collector.CollectorStatus:
 
 class StartRequest(BaseModel):
     packages: list[str]
+    engine: str = "fastir"  # "fastir" (original collector) | "modern" (Py3 extension)
     output_type: str = "csv"
     output_dir: str | None = None
     dump: list[str] = []
@@ -54,6 +56,7 @@ class StartRequest(BaseModel):
 class SettingsRequest(BaseModel):
     collector_override: str | None = None
     interpreter_override: list[str] | None = None
+    analysis_api_key: str | None = None
 
 
 # --- meta / settings ---------------------------------------------------------
@@ -62,11 +65,15 @@ class SettingsRequest(BaseModel):
 def meta():
     status = current_status()
     return {
+        "engines": collector.ENGINES,
         "packages": collector.PACKAGES,
         "dump_options": collector.DUMP_OPTIONS,
         "output_types": collector.OUTPUT_TYPES,
         "dump_package": collector.DUMP_PACKAGE,
         "status": status.to_dict(),
+        "modern_packages": collector.MODERN_PACKAGES,
+        "modern_status": collector.modern_status(),
+        "analysis": analysis.availability(SETTINGS),
         "repo_root": str(collector.repo_root()),
     }
 
@@ -75,18 +82,50 @@ def meta():
 def update_settings(req: SettingsRequest):
     SETTINGS["collector_override"] = req.collector_override or None
     SETTINGS["interpreter_override"] = req.interpreter_override or None
-    return {"status": current_status().to_dict()}
+    if req.analysis_api_key is not None:
+        SETTINGS["analysis_api_key"] = req.analysis_api_key or None
+    return {"status": current_status().to_dict(), "analysis": analysis.availability(SETTINGS)}
+
+
+@app.get("/api/analysis-info")
+def analysis_info():
+    return analysis.availability(SETTINGS)
+
+
+@app.get("/api/collections/{run_id}/analyze/stream")
+def analyze_collection(run_id: str):
+    run = runs.registry.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return StreamingResponse(analysis.iter_analysis_sse(run, SETTINGS),
+                             media_type="text/event-stream")
+
+
+class ExplainRequest(BaseModel):
+    rel: str
+    header: list[str] = []
+    row: list[str] = []
+
+
+@app.post("/api/collections/{run_id}/explain")
+def explain_row(run_id: str, req: ExplainRequest):
+    run = runs.registry.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return analysis.explain_row(run, req.rel, req.header, req.row, SETTINGS)
 
 
 @app.post("/api/preview-command")
 def preview_command(req: StartRequest):
     """Show the exact argv that would run, without launching anything."""
-    status = current_status()
     opts = req.model_dump()
     if not opts.get("output_dir"):
         opts["output_dir"] = str(runs.RUNS_DIR / "<run-id>" / "output")
     try:
-        argv = collector.build_command(opts, status)
+        if req.engine == "modern":
+            argv = collector.build_modern_command(opts)
+        else:
+            argv = collector.build_command(opts, current_status())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"argv": argv, "command": " ".join(argv)}
@@ -96,22 +135,29 @@ def preview_command(req: StartRequest):
 
 @app.post("/api/collections")
 def start_collection(req: StartRequest):
-    status = current_status()
-    if not status.collector_found:
-        raise HTTPException(status_code=409,
-                            detail=f"Collector not found at {status.collector_path}. Set its path in Settings.")
-
     run_id = runs.registry.new_id()
     opts = req.model_dump()
     if not opts.get("output_dir"):
         opts["output_dir"] = str(runs.RUNS_DIR / run_id / "output")
 
     try:
-        argv = collector.build_command(opts, status)
+        if req.engine == "modern":
+            mstatus = collector.modern_status()
+            if not mstatus["runnable"]:
+                raise HTTPException(status_code=409,
+                                    detail="Modern engine needs a Windows host to collect live artifacts.")
+            argv = collector.build_modern_command(opts)
+            cwd = str(collector.modern_collector_path().parent)
+        else:
+            status = current_status()
+            if not status.collector_found:
+                raise HTTPException(status_code=409,
+                                    detail=f"Collector not found at {status.collector_path}. Set its path in Settings.")
+            argv = collector.build_command(opts, status)
+            cwd = str(Path(status.collector_path).resolve().parent)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    cwd = str(Path(status.collector_path).resolve().parent)
     run = runs.Run(run_id, argv, opts, cwd)
     runs.registry.add(run)
     run.start()
@@ -198,13 +244,14 @@ def download_artifact(run_id: str, rel: str):
     return FileResponse(path, filename=path.name)
 
 
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+
 # --- static frontend (serve built SPA if present) ----------------------------
+# Mounted LAST so the catch-all at "/" never shadows the API or /healthz routes.
 
 _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _DIST.exists():
     app.mount("/", StaticFiles(directory=str(_DIST), html=True), name="spa")
-
-
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}

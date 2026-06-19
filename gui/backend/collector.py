@@ -19,6 +19,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import modern_collector
+
 # --- FastIR CLI contract (mirrors main.py / settings.py upstream) -------------
 
 # --packages accepts these. "all" expands inside FastIR itself.
@@ -48,6 +50,65 @@ OUTPUT_TYPES = ["csv", "json"]
 # Packages whose presence makes --dump meaningful / required.
 DUMP_PACKAGE = "dump"
 FILECATCHER_PACKAGE = "filecatcher"
+
+# --- Modern engine (our Python 3 collector for post-2015 artifacts) ----------
+
+ENGINES = ["fastir", "modern"]
+MODERN_PACKAGES = modern_collector.PACKAGES
+MODERN_PACKAGE_IDS = {p["id"] for p in MODERN_PACKAGES}
+MODERN_ADMIN_ARTIFACTS = sorted(modern_collector.ADMIN_ARTIFACTS)
+
+
+def modern_collector_path() -> Path:
+    return Path(__file__).resolve().parent / "modern_collector.py"
+
+
+def modern_status() -> dict:
+    """The modern engine runs on the backend's own Python 3 -- always present."""
+    windows = os.name == "nt"
+    admin = is_admin()
+    notes = []
+    if not windows:
+        notes.append("Host is not Windows. Live modern artifacts are unavailable here.")
+    if not admin:
+        notes.append(f"Some artifacts need administrator: {', '.join(MODERN_ADMIN_ARTIFACTS)}. "
+                     "User artifacts (timeline, jumplists, muicache, pshistory, recentapps) work without it.")
+    if windows and admin:
+        notes.append("Ready: full modern collection can run on this host.")
+    elif windows:
+        notes.append("Ready: user-level modern artifacts can run now; elevate for the rest.")
+    return {
+        "available": True,
+        "python": sys.executable,
+        "collector_path": str(modern_collector_path()),
+        "is_windows": windows,
+        "is_admin": admin,
+        "runnable": windows,
+        "admin_artifacts": MODERN_ADMIN_ARTIFACTS,
+        "notes": notes,
+    }
+
+
+def build_modern_command(options: dict) -> list[str]:
+    """Build argv for the modern Python 3 collector."""
+    packages = [p.strip().lower() for p in options.get("packages", []) if p.strip()]
+    if not packages:
+        raise ValueError("Select at least one modern artifact.")
+    for p in packages:
+        if p not in MODERN_PACKAGE_IDS:
+            raise ValueError(f"Unknown modern artifact: {p}")
+    output_type = (options.get("output_type") or "csv").lower()
+    if output_type not in OUTPUT_TYPES:
+        raise ValueError(f"output_type must be one of {OUTPUT_TYPES}")
+    output_dir = options.get("output_dir")
+    if not output_dir:
+        raise ValueError("output_dir is required.")
+    return [
+        sys.executable, str(modern_collector_path()),
+        "--packages", ",".join(packages),
+        "--output_type", output_type,
+        "--output_dir", output_dir,
+    ]
 
 
 def repo_root() -> Path:

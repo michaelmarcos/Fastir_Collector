@@ -16,13 +16,17 @@ export function ArtifactBrowser({
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const [explain, setExplain] = useState<{ row: string[]; text: string; mode: string; loading: boolean } | null>(null);
+
   useEffect(() => {
     setSelected(artifacts[0] ?? null);
     setPreview(null);
+    setExplain(null);
   }, [run?.id]);
 
   useEffect(() => {
     if (!run || !selected) return;
+    setExplain(null);
     setLoading(true);
     api
       .preview(run.id, selected.rel)
@@ -30,6 +34,17 @@ export function ArtifactBrowser({
       .catch(() => setPreview(null))
       .finally(() => setLoading(false));
   }, [run?.id, selected?.rel]);
+
+  const explainRow = async (header: string[], row: string[]) => {
+    if (!run || !selected) return;
+    setExplain({ row, text: "", mode: "", loading: true });
+    try {
+      const res = await api.explain(run.id, selected.rel, header, row);
+      setExplain({ row, text: res.explanation, mode: res.mode, loading: false });
+    } catch (e) {
+      setExplain({ row, text: `Could not explain: ${(e as Error).message}`, mode: "error", loading: false });
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -106,9 +121,39 @@ export function ArtifactBrowser({
                   {loading ? (
                     <p className="font-mono text-[11px] text-slate-500">loading…</p>
                   ) : (
-                    <PreviewBody preview={preview} />
+                    <PreviewBody preview={preview} onExplainRow={explainRow} />
                   )}
                 </div>
+                {explain && (
+                  <div className="max-h-[40%] shrink-0 overflow-auto border-t border-ink-600 bg-ink-900/50 p-4">
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <span className="text-acid">⌬</span>
+                      <span className="font-mono text-[11px] uppercase tracking-wider text-slate-400">
+                        Explain row
+                      </span>
+                      {explain.mode && explain.mode !== "error" && (
+                        <span className="font-mono text-[10px] text-slate-600">
+                          ({explain.mode === "claude" ? "AI" : "heuristic"})
+                        </span>
+                      )}
+                      <button
+                        onClick={() => setExplain(null)}
+                        className="ml-auto font-mono text-[11px] text-slate-500 hover:text-slate-300"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {explain.loading ? (
+                      <p className="flex items-center gap-2 font-mono text-[11px] text-slate-500">
+                        <span className="inline-block h-3 w-2 animate-blink bg-acid" /> analyzing this entry…
+                      </p>
+                    ) : (
+                      <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-slate-300">
+                        {explain.text}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </motion.div>
@@ -118,16 +163,24 @@ export function ArtifactBrowser({
   );
 }
 
-function PreviewBody({ preview }: { preview: ArtifactPreview | null }) {
+function PreviewBody({
+  preview,
+  onExplainRow,
+}: {
+  preview: ArtifactPreview | null;
+  onExplainRow: (header: string[], row: string[]) => void;
+}) {
   if (!preview) return <p className="font-mono text-[11px] text-slate-600">Select an artifact.</p>;
 
   if (preview.kind === "csv") {
+    const header = preview.header ?? [];
     return (
       <div className="overflow-auto">
+        <p className="mb-2 font-mono text-[10px] text-slate-600">Click any row to ask the AI to explain it.</p>
         <table className="w-full border-collapse font-mono text-[11px]">
           <thead className="sticky top-0">
             <tr>
-              {preview.header?.map((h, i) => (
+              {header.map((h, i) => (
                 <th
                   key={i}
                   className="border-b border-ink-500 bg-ink-700 px-2.5 py-1.5 text-left font-semibold text-acid/90"
@@ -139,7 +192,11 @@ function PreviewBody({ preview }: { preview: ArtifactPreview | null }) {
           </thead>
           <tbody>
             {preview.rows?.map((row, i) => (
-              <tr key={i} className="odd:bg-ink-700/30">
+              <tr
+                key={i}
+                onClick={() => onExplainRow(header, row)}
+                className="cursor-pointer odd:bg-ink-700/30 hover:bg-acid/[0.07]"
+              >
                 {row.map((cell, j) => (
                   <td key={j} className="border-b border-ink-600/50 px-2.5 py-1 text-slate-300">
                     {cell}

@@ -23,12 +23,51 @@ export interface CollectorStatus {
   notes: string[];
 }
 
+export interface ModernStatus {
+  available: boolean;
+  python: string;
+  collector_path: string;
+  is_windows: boolean;
+  is_admin: boolean;
+  runnable: boolean;
+  admin_artifacts: string[];
+  notes: string[];
+}
+
+export type Engine = "fastir" | "modern";
+
+export interface AttackTechnique {
+  tactic: string;
+  technique_id: string;
+  technique_name: string;
+  evidence: string;
+  confidence: string;
+}
+
+export interface AttackAssessment {
+  verdict: string;
+  confidence: string;
+  techniques: AttackTechnique[];
+}
+
+export interface AnalysisInfo {
+  sdk_installed: boolean;
+  has_key: boolean;
+  ai_ready: boolean;
+  model: string;
+  mode: string;
+}
+
 export interface Meta {
+  engines: Engine[];
   packages: PackageInfo[];
   dump_options: DumpOption[];
   output_types: string[];
   dump_package: string;
   status: CollectorStatus;
+  modern_packages: PackageInfo[];
+  modern_status: ModernStatus;
+  analysis: AnalysisInfo;
   repo_root: string;
 }
 

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import type { Meta } from "../types";
+import type { Engine, Meta, PackageInfo } from "../types";
 import { Button, Panel } from "./ui";
 
 export interface Config {
@@ -13,6 +13,9 @@ export interface Config {
 
 export function ConfigPanel({
   meta,
+  engine,
+  setEngine,
+  packages,
   cfg,
   setCfg,
   command,
@@ -21,6 +24,9 @@ export function ConfigPanel({
   onStop,
 }: {
   meta: Meta;
+  engine: Engine;
+  setEngine: (e: Engine) => void;
+  packages: PackageInfo[];
   cfg: Config;
   setCfg: (c: Config) => void;
   command: string | null;
@@ -34,16 +40,42 @@ export function ConfigPanel({
     setCfg({ ...cfg, [key]: next });
   };
 
-  const dumpSelected = cfg.packages.has(meta.dump_package);
+  const isFastir = engine === "fastir";
+  const dumpSelected = isFastir && cfg.packages.has(meta.dump_package);
 
   return (
     <Panel title="Collection plan" className="flex h-full flex-col">
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
+        {/* Engine */}
+        <section>
+          <Label>Engine</Label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {([
+              { id: "fastir", name: "FastIR", sub: "original Py2 collector" },
+              { id: "modern", name: "Modern", sub: "Py3 · 2025 artifacts" },
+            ] as const).map((e) => {
+              const on = engine === e.id;
+              return (
+                <button
+                  key={e.id}
+                  onClick={() => setEngine(e.id)}
+                  className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                    on ? "border-acid/60 bg-acid/[0.08]" : "border-ink-600/70 bg-ink-700/40 hover:border-ink-500"
+                  }`}
+                >
+                  <span className={`block font-mono text-xs ${on ? "text-acid" : "text-slate-200"}`}>{e.name}</span>
+                  <span className="block text-[10px] text-slate-500">{e.sub}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
         {/* Packages */}
         <section>
-          <Label>Packages</Label>
+          <Label>{isFastir ? "Packages" : "Modern artifacts"}</Label>
           <div className="grid gap-1.5">
-            {meta.packages.map((p) => {
+            {packages.map((p) => {
               const on = cfg.packages.has(p.id);
               return (
                 <button
